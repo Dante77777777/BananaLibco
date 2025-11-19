@@ -95,7 +95,7 @@ static ssize_t do_io(int fd, OriginFun fun, const char* hook_fun_name, uint32_t 
         return -1;
     }
 
-    if(!ctx->isSocket() || ctx->m_userNonblock()){
+    if(!ctx->isSocket() || ctx->getUserNonblock()){
         return fun(fd,std::forward<Args>(args)...);
     }
 
@@ -113,7 +113,7 @@ retry:
         banana::IOManager* iom = banana::IOManager::GetThis();
 
         std::shared_ptr<banana::Timer> timer;
-        std::weak_ptr<banna::timer_info> winfo(tinfo);
+        std::weak_ptr<timer_info> winfo(tinfo);
 
         if(timeout != (uint64_t)-1)
         {
@@ -124,12 +124,12 @@ retry:
                 {
                     return ;
                 }
-                t->cancelled = ETIMEOUT;
-                iom->cancelEvent(fd,(banna::IOManager::event)event);
+                t->cancelled = ETIMEDOUT;
+                iom->cancelEvent(fd,(banana::IOManager::Event)event);
             }, winfo);
         }
 
-        int rt = iom->addEvent(fd,(banna::IOManager::event)event);
+        int rt = iom->addEvent(fd,(banana::IOManager::Event)event);
         if(rt)
         {
             std::cout << hook_fun_name << " addEvent("<< fd << ", " << event << ")";
@@ -355,5 +355,197 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *
 ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
 {
     return do_io(sockfd,recvmsg_f,"recvmsg",banana::IOManager::READ,SO_RCVTIMEO,msg,flags);
+}
+
+
+ssize_t write(int fd, const void *buf, size_t count)
+{
+    return do_io(fd,write_f,"write",banana::IOManager::WRITE,SO_SNDTIMEO,buf,count);
+}
+
+
+ssize_t writev(int fd, const struct iovec *iov, int iovcnt)
+{
+    return do_io(fd,writev_f,"writev",banana::IOManager::WRITE,SO_SNDTIMEO,iov,iovcnt);
+}
+
+
+ssize_t send(int sockfd, const void *buf, size_t len, int flags)
+{
+    return do_io(sockfd,send_f,"send",banana::IOManager::WRITE,SO_SNDTIMEO,buf,len,flags);
+}
+
+
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+    return do_io(sockfd,sendto_f,"sendto",banana::IOManager::WRITE,SO_SNDTIMEO,buf,len,flags,dest_addr,addrlen);
+}
+
+
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
+{
+    return do_io(sockfd,sendmsg_f,"sendmsg_f",banana::IOManager::WRITE,SO_SNDTIMEO,msg,flags);
+}
+
+
+int close(int fd)
+{
+    if(!banana::is_hook_enable)
+    {
+        return close_f(fd);
+    }
+    std::shared_ptr<banana::FdCtx> ctx = banana::FdMgr::GetInstance()->get(fd);
+    if(ctx)
+    {
+        banana::IOManager* iom = banana::IOManager::GetThis();
+        if(iom)
+        {
+            iom->cancelAll(fd);
+        }
+        banana::FdMgr::GetInstance()->del(fd);
+    }
+    return close_f(fd);
+}
+
+
+int fcntl(int fd, int cmd, ... /* arg */ )
+{
+    va_list va;
+    va_start(va,cmd);
+    switch (cmd)
+    {
+    case F_SETFL:
+        {
+            int arg = va_arg(va, int);
+            va_end(va);
+            std::shared_ptr<banana::FdCtx> ctx = banana::FdMgr::GetInstance()->get(fd);
+            if(!ctx || ctx->isClosed() || !ctx->isSocket())
+            {
+                return fcntl_f(fd,cmd,arg);
+            }
+            ctx->setUserNonblock(arg & O_NONBLOCK);
+            if(ctx->getSysNonblock())
+            {
+                arg |= O_NONBLOCK;
+            }else{
+                arg &= ~O_NONBLOCK;
+            }
+            return fcntl_f(fd,cmd,arg);
+        }
+        break;
+    case F_GETFL:
+        {
+            int arg = va_arg(va,int);
+            va_end(va);
+            std::shared_ptr<banana::FdCtx> ctx = banana::FdMgr::GetInstance()->get(fd);
+            if(!ctx || ctx->isClosed() || ctx->isSocket())
+            {
+                return fcntl_f(fd,cmd,arg);
+            }
+            if(ctx->getUserNonblock())
+            {
+                return arg |= O_NONBLOCK;
+            }else{
+                return arg &= ~O_NONBLOCK;
+            }
+        }
+        break;
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
+    case F_SETFD:
+    case F_SETOWN:
+    case F_SETSIG:
+    case F_SETLEASE:
+    case F_NOTIFY:
+#ifdef F_SETPIPE_SZ
+        case F_SETPIPE_SZ:
+#endif
+        {
+            int arg = va_arg(va,int);
+            va_end(va);
+            return fcntl_f(fd,cmd,arg);
+        }
+        break;
+    case F_GETFD:
+    case F_GETOWN:
+    case F_GETSIG:
+    case F_GETLEASE:
+#ifdef F_GETPIPE_SZ
+        case F_GETPIPE_SZ:
+#endif
+        {
+            va_end(va);
+            return fcntl_f(fd,cmd);
+        }
+        break;
+    case F_SETLK:
+    case F_SETLKW:
+    case F_GETLK:
+        {
+            struct flock* arg = va_arg(va,struct flock*);
+            va_end(va);
+            return fcntl_f(fd,cmd,arg);
+        }
+        break;
+    case F_GETOWN_EX:
+    case F_SETOWN_EX:
+        {
+            struct f_owner_exlock* arg = va_arg(va, struct f_owner_exlock*);
+            va_end(va);
+            return fcntl_f(fd, cmd, arg);
+        }
+        break;
+    default:
+        va_end(va);
+        return fcntl_f(fd,cmd);
+    }
+}
+
+
+int ioctl(int fd, unsigned long request, ...)
+{
+    va_list va;
+    va_start(va,request);
+    void* arg = va_arg(va,void*);
+    va_end(va);
+    if(FIONBIO == request)
+    {
+        bool user_nonblock = !!*(int *)arg;
+        std::shared_ptr<banana::FdCtx> ctx = banana::FdMgr::GetInstance()->get(fd);
+        if(!ctx || ctx->isClosed() || !ctx->isSocket())
+        {
+            return ioctl_f(fd,request,arg);
+        }
+        ctx->setUserNonblock(user_nonblock);
+    }
+    return ioctl_f(fd,request,arg);
+}
+
+
+int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen)
+{
+    return getsockopt_f(sockfd,level,optname,optval,optlen);
+}
+
+
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
+{
+    if(!banana::is_hook_enable)
+    {
+        return setsockopt_f(sockfd,level,optname,optval,optlen);
+    }
+    if(level == SOL_SOCKET)
+    {
+        if(optname == SO_RCVTIMEO || optname == SO_SNDTIMEO)
+        {
+            std::shared_ptr<banana::FdCtx> ctx = banana::FdMgr::GetInstance()->get(sockfd);
+            if(ctx)
+            {
+                const timeval* v = (const timeval*)optval;
+                ctx->setTimeout(optname, v->tv_sec * 1000 + v->tv_usec / 1000);
+            }
+        }
+    }
+    return setsockopt_f(sockfd,level,optname,optval,optlen);
 }
 }

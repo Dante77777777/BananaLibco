@@ -82,7 +82,7 @@ public:
                 singleton = new T();
             }
         }
-        return T;
+        return singleton;
     }
 
     static void DestroyInstance()
